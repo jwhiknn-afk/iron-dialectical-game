@@ -1,0 +1,265 @@
+/* IRON DIALECTIC — event and decision engine. Interprets the effect lists in data/events.js. No DOM. */
+(function () {
+  'use strict';
+  const ID = (globalThis.ID = globalThis.ID || {});
+  const clamp = ID.clamp, c100 = (v) => clamp(v, 0, 100);
+  const Ev = (ID.Events = {});
+  let byId = null, decById = null;
+  function index() {
+    byId = {}; decById = {};
+    for (const e of ID.EVENT_DEFS) byId[e.id] = e;
+    for (const d of ID.DECISIONS) decById[d.id] = d;
+  }
+  Ev.def = (id) => { if (!byId) index(); return byId[id]; };
+  Ev.decision = (id) => { if (!decById) index(); return decById[id]; };
+
+  const FN = ID.FACTIONS;
+  const LABEL = { stab: 'Stability', auth: 'Authority', we: 'War weariness', corr: 'Corruption', bureau: 'Bureaucratisation', fervor: 'Fervour', tradition: 'Tradition', glory: 'Glory',
+    mandate: 'Mandate', particip: 'Participation', discipline: 'Party discipline', charisma: 'Leader’s authority', grievance: 'Hidden grievance', prestige: 'Generals’ prestige', dist: 'Plan distortion',
+    conf: 'Business confidence', inflation: 'Inflation', threat: 'Threat', unrest: 'Unrest', opp: 'Opposition strength', equip: 'Equipment' };
+  const MODL = { prod: 'industrial output', food: 'food output', atk: 'attack', def: 'defence', sci: 'research', ls: 'living standards', legit: 'legitimacy', stab: 'stability', rev: 'revenue', eff: 'efficiency',
+    unrest: 'unrest', opp: 'opposition growth', trade: 'trade income', conf: 'confidence', growth: 'population growth', regen: 'recruitment', vote: 'vote share', dist: 'distortion growth', bureau: 'bureaucratisation', pow_capital: 'capital’s power',
+    coup: 'coup risk', auth: 'authority a month', speed: 'front speed', aloss: 'losses in attack', mob: 'mobilisation ceiling', wePace: 'war-weariness growth', driftK: 'drift speed', cityDef: 'city defence', lure: 'enemy advance', navy: 'sea power' };
+  const BAD_UP = { we: 1, corr: 1, bureau: 1, grievance: 1, dist: 1, inflation: 1, threat: 1, unrest: 1, opp: 1, prestige: 1 };
+  const sg = (v) => (v > 0 ? '+' : '−') + Math.abs(Math.round(v * 100) / 100);
+  const dur = (m) => (m >= 600 ? ' for good' : ' for ' + m + ' months');
+
+  /* Human-readable summary of an effect list. Returns [{t, good}] */
+  Ev.describe = function (fx, n) {
+    const out = []; let hidden = false;
+    for (const f of fx || []) {
+      const k = f[0];
+      if (LABEL[k]) out.push({ t: LABEL[k] + ' ' + sg(f[1]), good: BAD_UP[k] ? f[1] < 0 : f[1] > 0 });
+      else if (k === 'gold') out.push({ t: 'Gold ' + sg(f[1]), good: f[1] > 0 });
+      else if (k === 'goldPct') out.push({ t: 'Gold ' + sg(f[1] * 100) + '%', good: f[1] > 0 });
+      else if (k === 'debt') out.push({ t: 'Debt ' + sg(f[1]), good: f[1] < 0 });
+      else if (k === 'debtPct') out.push({ t: 'Debt ' + sg(f[1] * 100) + '%', good: f[1] < 0 });
+      else if (k === 'sup') out.push({ t: (n ? ID.factionName(n, f[1]) : FN[f[1]].name) + ' ' + sg(f[2]), good: f[2] > 0 });
+      else if (k === 'supAll') out.push({ t: 'All factions ' + sg(f[1]), good: f[1] > 0 });
+      else if (k === 'pop') out.push({ t: 'Population ' + sg(f[1] * 100) + '%', good: f[1] > 0 });
+      else if (k === 'troops') out.push({ t: 'Troops ' + sg(f[1] * 100) + '%', good: f[1] > 0 });
+      else if (k === 'legitmod') out.push({ t: 'Legitimacy ' + sg(f[1]) + dur(f[2]), good: f[1] > 0 });
+      else if (k === 'mod') { const pctv = f[1] === 'legit' || f[1] === 'stab' || f[1] === 'ls' || f[1] === 'unrest' || f[1] === 'conf' || f[1] === 'opp' || f[1] === 'auth' ? sg(f[2]) : sg(f[2] * 100) + '%'; const badUp = f[1] === 'unrest' || f[1] === 'opp' || f[1] === 'dist' || f[1] === 'bureau' || f[1] === 'pow_capital' || f[1] === 'coup' || f[1] === 'aloss' || f[1] === 'wePace' || f[1] === 'driftK'; out.push({ t: (MODL[f[1]] || f[1]).replace(/^./, (c) => c.toUpperCase()) + ' ' + pctv + dur(f[3]), good: badUp ? f[2] < 0 : f[2] > 0 }); }
+      else if (k === 'drift') out.push({ t: 'Drift toward ' + ID.IDEOLOGIES[f[1]].name + ' ' + sg(f[2]), good: f[2] < 0 });
+      else if (k === 'driftAll') out.push({ t: 'All drifts ' + sg(f[1]), good: f[1] < 0 });
+      else if (k === 'strike') out.push({ t: 'Strike for ' + f[1] + ' months (industry −30%)', good: false });
+      else if (k === 'opAll') out.push({ t: 'Opinion of every state ' + sg(f[1]), good: f[1] > 0 });
+      else if (k === 'emergency') out.push({ t: f[1] ? 'Emergency rule begins' : 'Emergency rule ends', good: !f[1] });
+      else if (k === 'tech') out.push({ t: 'Research progress ' + sg(f[1]), good: f[1] > 0 });
+      else if (k === 'note') out.push({ t: f[1], good: f.length > 2 ? f[2] : true });
+      else if (k === 'later') hidden = true;
+      else if (ID.Focus && ID.Focus.DESC[k]) { const d = ID.Focus.DESC[k](f, n); if (d && d.t) out.push(d); }
+    }
+    if (hidden) out.push({ t: 'This will have consequences later.', good: null });
+    return out;
+  };
+  ID.factionName = (n, f) => (ID.ideo(n).fnames && ID.ideo(n).fnames[f]) || FN[f].name;
+
+  Ev.applyFx = function (G, n, fx, ctx) {
+    for (const f of fx || []) {
+      const k = f[0], v = f[1];
+      switch (k) {
+        case 'stab': n.stab = c100(n.stab + v); break;
+        case 'auth': n.auth = clamp(n.auth + v, 0, 100); break;
+        case 'gold': n.gold += v; break;
+        case 'goldPct': n.gold += Math.max(0, n.gold) * v; break;
+        case 'debt': n.debt = Math.max(0, n.debt + v); break;
+        case 'debtPct': n.debt = Math.max(0, n.debt * (1 + v)); break;
+        case 'sup': n.sm[v] += f[2] * 0.6; n.fs[v] = c100(n.fs[v] + f[2] * 0.5); break;
+        case 'supAll': for (const x of ID.FACTION_IDS) { n.sm[x] += v * 0.6; n.fs[x] = c100(n.fs[x] + v * 0.5); } break;
+        case 'unrest': for (let p = 1; p < G.provinces.length; p++) { const Pr = G.provinces[p]; if (Pr.owner === n.id) Pr.unrest = c100(Pr.unrest + v); } break;
+        case 'opp': ID.Politics.boostOpp(G, n, v, f[2] || 0); break;
+        case 'we': case 'corr': case 'bureau': case 'fervor': case 'tradition': case 'glory': case 'mandate': case 'particip': case 'discipline': case 'charisma': case 'grievance': case 'dist': case 'conf': case 'inflation':
+          n[k] = c100(n[k] + v); break;
+        case 'prestige': n.prestige = Math.max(0, n.prestige + v); break;
+        case 'threat': n.threat = Math.max(0, n.threat + v); break;
+        case 'equip': n.equip = clamp(n.equip + v, 0.5, 1.4); break;
+        case 'pop': n.pop *= 1 + v; break;
+        case 'troops': n.troops *= 1 + v; break;
+        case 'legitmod': ID.addMod(n, 'legit', v, f[2], f[3] || 'Event'); break;
+        case 'mod': ID.addMod(n, v, f[2], f[3], f[4] || 'Event'); break;
+        case 'flag': n.flags[v] = 1; break;
+        case 'unflag': n.flags[v] = 0; break;
+        case 'cnt': n.cnt[v] = (n.cnt[v] || 0) + (f[2] || 1); break;
+        case 'drift': if (n.drift[v] != null) n.drift[v] = c100(n.drift[v] + f[2]); break;
+        case 'driftAll': for (const d in n.drift) n.drift[d] = c100(n.drift[d] + v); break;
+        case 'strike': n.strike = v < 0 ? Math.max(0, n.strike + v) : Math.max(n.strike, v); break;
+        case 'opAll': for (const o of G.nations) if (o && o.alive && o !== n) ID.addOp(G, o.id, n.id, v); break;
+        case 'later': (n.later = n.later || []).push({ at: G.tick + v * 30, id: f[2], ctx: f[3] || ctx || {} }); break;
+        case 'emergency': n.emergency = !!v; if (v) n.flags.everEmergency = 1; break;
+        case 'tech': n.sci += v; break;
+        case 'news': ID.news(G, v.replace('{N}', n.name), f[2] || 'pol', n.id); break;
+        case 'log': ID.logGrief(n, G.tick, v); break;
+        case 'fn': v(G, n, ctx || {}); break;
+        case 'note': break;
+        default: if (ID.Focus && ID.Focus.FX[k]) ID.Focus.FX[k](G, n, f, ctx || {}); break;
+      }
+    }
+  };
+
+  /* ---------------------------------------------------------------- events */
+  Ev.pending = (G, id) => G.evq.some((e) => e.id === id) || (G.tray || []).some((e) => e.id === id);
+  /* Ordinary dispatches wait in a tray beside the map while the game runs; urgent ones (sys, story)
+     stop the clock. G.trayEvents is set by the interface from the player's settings. */
+  Ev.urgent = (def) => !!((def.sys || def.story) && def.tone !== 'good' && !def.tray); // good news and quiet consequences never stop the clock
+  /* Fortune: every dispatch is 'bad' (a problem), 'good' (a windfall) or 'mixed' (a dilemma).
+     Bad news raises n.a.luck, good news spends it; the monthly draw leans toward good fortune
+     while luck is high and keeps problems apart (see Ev.month). Tones are set in data/fortune.js. */
+  Ev.tone = (def) => def.tone || (def.sys && !def.story ? 'bad' : 'mixed');
+  function fortune(G, n, def) {
+    const t = Ev.tone(def);
+    if (t === 'bad') { n.a.luck = Math.min(6, (n.a.luck || 0) + 1); n.a.lastBad = G.tick; }
+    else if (t === 'good') n.a.luck = Math.max(0, (n.a.luck || 0) - 1.5);
+  }
+  Ev.queue = function (G, n, id, ctx) {
+    const def = Ev.def(id); if (!def) return;
+    fortune(G, n, def);
+    if (def.sys || def.story || def.national) n.a.lastSys = G.tick; // chance gives way to the story (Ev.month)
+    if (n.id === G.player && !G.autoPlayer) {
+      const e = { id, n: n.id, ctx: ctx || {}, t: G.tick };
+      if (G.trayEvents && !Ev.urgent(def)) { (G.tray = G.tray || []).push(e); G.uiDirty = true; } else G.evq.push(e);
+      ID.sfx(G, def.sfx || 'event');
+    }
+    else Ev.auto(G, n, def, ctx || {});
+  };
+  Ev.options = function (G, n, def, ctx) {
+    const src = typeof def.opts === 'function' ? def.opts(G, n, ctx) : def.opts;
+    return src.filter((o) => !o.can || o.can(n, G, ctx));
+  };
+  Ev.txt = (v, G, n, ctx) => (typeof v === 'function' ? v(n, G, ctx) : v).replace(/\{N\}/g, n.name).replace(/\{A\}/g, n.adj).replace(/\{L\}/g, n.leader.title + ' ' + n.leader.name).replace(/\{BODY\}/g, ID.ideo(n).control.body);
+  Ev.auto = function (G, n, def, ctx) {
+    const opts = Ev.options(G, n, def, ctx); if (!opts.length) return;
+    let h = G.historical && def.story ? opts.find((x) => x.hist) : null;
+    // divergent history: now and then a country takes the other road
+    if (h && G.story && G.story.loose && opts.length > 1 && !def.fixed && G.rng.chance(0.15)) h = G.rng.weighted(opts.filter((x) => x !== h && !x.noAI), (x) => (x.ai != null && typeof x.ai !== 'function' ? x.ai : 1)) || h;
+    const o = h || G.rng.weighted(opts, (x) => (typeof x.ai === 'function' ? x.ai(n, G, ctx) : x.ai != null ? x.ai : 1)) || opts[0];
+    Ev.storyPick(G, n, def, o);
+    if (ID.Press && (def.story || def.national || def.press)) ID.Press.story(G, n, def, o, ctx);
+    Ev.applyFx(G, n, typeof o.fx === 'function' ? o.fx(n, G, ctx) : o.fx, ctx);
+  };
+  /* Story choices are remembered: o.sf sets a story flag that later beats read. */
+  Ev.storyPick = function (G, n, def, o) {
+    if (!def.story || !G.story) return;
+    if (!G.story.flags) G.story.flags = {}; if (!G.story.picks) G.story.picks = {};
+    if (o.sf) G.story.flags[o.sf] = G.tick || 1;
+    G.story.picks[def.id] = typeof o.label === 'string' ? o.label : '';
+    if (!o.hist && ID.isMajor(G, n) && n.id !== G.player) ID.news(G, 'History turns: ' + n.name + ' — ' + Ev.txt(o.label, G, n, {}) + '.', 'pol', n.id);
+  };
+  /* Player picks option k of the event at the head of the queue (or of tray entry idx). */
+  Ev.choose = function (G, k, idx, byMinisters) {
+    const e = idx != null ? (G.tray || []).splice(idx, 1)[0] : G.evq.shift(); if (!e) return;
+    const n = G.nations[e.n], def = Ev.def(e.id); if (!n || !def || !n.alive) return;
+    const opts = Ev.options(G, n, def, e.ctx); if (!opts.length) return;
+    let o = opts[k] || opts[0];
+    if (byMinisters) { o = G.rng.weighted(opts, (x) => (typeof x.ai === 'function' ? x.ai(n, G, e.ctx) : x.ai != null ? x.ai : 1)) || opts[0]; ID.news(G, 'Left unanswered, “' + Ev.txt(def.title, G, n, e.ctx) + '” was settled by your ministers: ' + Ev.txt(o.label, G, n, e.ctx) + '.', 'pol', n.id); }
+    Ev.storyPick(G, n, def, o);
+    Ev.applyFx(G, n, typeof o.fx === 'function' ? o.fx(n, G, e.ctx) : o.fx, e.ctx);
+    n.hist = n.hist || []; n.hist.push({ t: G.tick, id: e.id, title: Ev.txt(def.title, G, n, e.ctx), pick: Ev.txt(o.label, G, n, e.ctx) }); if (n.hist.length > 60) n.hist.shift();
+  };
+
+  Ev.month = function (G, n) {
+    // delayed consequences
+    if (n.later && n.later.length) {
+      for (let k = n.later.length - 1; k >= 0; k--) {
+        const L = n.later[k]; if (G.tick < L.at) continue;
+        n.later.splice(k, 1);
+        const def = Ev.def(L.id); if (def && (!def.w || def.w(n, G, L.ctx) > 0 || def.always)) Ev.queue(G, n, L.id, L.ctx);
+      }
+    }
+    if (n.a.luck) n.a.luck *= 0.94; // hard times are forgotten in about a year
+    if (n.a.evCd > 0) { n.a.evCd--; return; }
+    if (!byId) index();
+    const isP0 = n.id === G.player;
+    // the story first: no random dispatch within three months of a chapter, a national turning point or a crisis
+    if (isP0 && n.a.lastSys != null && G.tick - n.a.lastSys < 90) return;
+    // a world-wide cap on random dispatches each month (the player's own are paced by their cooldown)
+    if (G.evMonth !== G.tick) { G.evMonth = G.tick; G.evMonthN = 0; }
+    if (!isP0 && G.evMonthN >= 4) return;
+    const era = ID.eraOf(G.tick);
+    const seen = n.a.evSeen || (n.a.evSeen = {});
+    const cands = []; let tot = 0;
+    const isP = n.id === G.player, luck = n.a.luck || 0;
+    // no fresh trouble within eight months (five for AI states) of the last piece of bad news
+    const calm = n.a.lastBad != null && G.tick - n.a.lastBad < (isP ? 240 : 150);
+    for (const def of ID.EVENT_DEFS) {
+      if (!def.w || def.sys) continue;
+      if (def.era != null && era < def.era) continue;
+      if (def.once && seen[def.id]) continue;
+      // each repeat waits longer than the last, and nothing comes a fourth time (def.recur: seasonal, at most five)
+      const cnt0 = (n.a.evN && n.a.evN[def.id]) || 0;
+      if (cnt0 >= (def.recur ? 5 : 3)) continue;
+      if (seen[def.id] && G.tick - seen[def.id] < (def.cd || 60) * 30 * (1 + cnt0)) continue;
+      let w = 0; try { w = def.w(n, G, {}) || 0; } catch (e) { w = 0; }
+      if (w <= 0) continue;
+      // what has come round often comes round less, and two dispatches on one subject do not arrive back to back
+      const cnt = (n.a.evN && n.a.evN[def.id]) || 0; if (cnt) w /= 1 + 0.45 * cnt;
+      if (def.theme && n.a.evTh && n.a.evTh[def.theme] != null && G.tick - n.a.evTh[def.theme] < 300) w *= 0.25;
+      const t = Ev.tone(def);
+      if (t === 'bad') { if (calm) continue; w /= 1 + 0.9 * luck; }
+      else if (t === 'good') w *= 1.5 + 0.7 * luck;
+      cands.push([def, w]); tot += w;
+    }
+    if (!tot) return;
+    if (!G.rng.chance(clamp(tot / (isP ? 150 : 260), 0, isP ? 0.2 : 0.15))) return;
+    const pick = G.rng.weighted(cands, (c) => c[1]); if (!pick) return;
+    const d0 = pick[0]; seen[d0.id] = G.tick; n.a.evCd = isP ? 6 : 8; G.evMonthN++;
+    (n.a.evN || (n.a.evN = {}))[d0.id] = ((n.a.evN[d0.id] || 0) + 1);
+    if (d0.theme) (n.a.evTh || (n.a.evTh = {}))[d0.theme] = G.tick;
+    const ctx = {};
+    if (d0.variants > 1) { const V = n.a.evV || (n.a.evV = {}), last = V[d0.id] != null ? V[d0.id] : -1; let v = G.rng.int(0, d0.variants - 1); if (v === last) v = (v + 1 + G.rng.int(0, d0.variants - 2)) % d0.variants; V[d0.id] = v; ctx.v = v; }
+    Ev.queue(G, n, d0.id, ctx);
+  };
+
+  /* ---------------------------------------------------------------- decisions */
+  Ev.decisionsFor = function (G, n) {
+    if (!decById) index();
+    return ID.DECISIONS.filter((d) => !d.hidden && (!d.ideos || d.ideos.indexOf(n.ideo) >= 0) && (!d.show || d.show(n, G)));
+  };
+  /* '' if available, else the reason. */
+  Ev.decisionBlock = function (G, n, d) {
+    if ((n.cd[d.id] || 0) > G.tick) return 'Available again ' + ID.dateOf(n.cd[d.id]).short + '.';
+    const c = d.cost || {};
+    if (c.auth && n.auth < c.auth) return 'Needs ' + c.auth + ' authority.';
+    if (c.gold && n.gold < c.gold) return 'Needs ' + c.gold + ' gold.';
+    if (d.can) { const w = d.can(n, G); if (w) return w; }
+    return '';
+  };
+  Ev.runDecision = function (G, n, id, voted) {
+    const d = Ev.decision(id); if (!d) return 'Unknown decision.';
+    if (!voted) {
+      const why = Ev.decisionBlock(G, n, d); if (why) return why;
+      const I = ID.ideo(n), ct = I.control.type;
+      if (d.vote && (ct === 'parliament' || ct === 'assembly') && !n.emergency) {
+        const res = ID.Politics.vote(G, n, 'decision', { aff: d.vote });
+        if (!res.pass) { n.auth = Math.max(0, n.auth - Math.ceil(((d.cost && d.cost.auth) || 0) / 2)); return 'The ' + I.control.body + ' votes it down (' + Math.round(res.yes) + '% in favour).'; }
+        if (ct === 'assembly') {
+          if (d.cost) { n.auth -= d.cost.auth || 0; n.gold -= d.cost.gold || 0; }
+          n.cd[d.id] = G.tick + (d.cd || 12) * 30;
+          G.votes.push({ n: n.id, kind: 'decision', id: d.id, at: G.tick + (I.control.delay || 30) });
+          if (n.id === G.player) ID.news(G, 'The ' + I.control.body + ' takes up: ' + d.name + '.', 'pol', n.id);
+          return '';
+        }
+      }
+      if (d.cost) { n.auth -= d.cost.auth || 0; n.gold -= d.cost.gold || 0; }
+      n.cd[d.id] = G.tick + (d.cd || 12) * 30;
+      if (I.control.griev && d.decree !== false) n.grievance = Math.min(100, n.grievance + I.control.griev * 2);
+    }
+    Ev.applyFx(G, n, typeof d.fx === 'function' ? d.fx(n, G) : d.fx, {});
+    if (n.id === G.player) { ID.news(G, 'Decision: ' + d.name + '.', 'pol', n.id); ID.sfx(G, 'stamp'); }
+    return '';
+  };
+
+  /* Deliberately embrace a drift (a reform programme). */
+  Ev.embraceBlock = function (G, n, to) {
+    if (n.trans > 0) return 'The regime is already in transition.';
+    if ((n.drift[to] || 0) < 30) return 'The pressure for this change is still too weak (needs 30).';
+    if (n.auth < 50) return 'Needs 50 authority.';
+    return '';
+  };
+  Ev.embrace = function (G, n, to) {
+    const why = Ev.embraceBlock(G, n, to); if (why) return why;
+    n.auth -= 50;
+    ID.Politics.changeIdeology(G, n, to, 'reform');
+    return '';
+  };
+})();
